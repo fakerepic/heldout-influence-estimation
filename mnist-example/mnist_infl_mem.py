@@ -38,7 +38,7 @@ def load_mnist():
   # NOTE: even when we specify shuffle_files=False, the examples 
   # in the MNIST dataset loaded by tfds is still NOT in the 
   # original MNIST data order
-  raw_data = tfds.load(name='mnist', batch_size=-1,
+  raw_data = tfds.load(name='mnist', batch_size=-1, data_dir='./data',
                        as_dataset_kwargs={'shuffle_files': False})
   raw_data = tfds.as_numpy(raw_data)
   train_byte_images = raw_data['train']['image']
