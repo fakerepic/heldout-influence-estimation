@@ -9,12 +9,10 @@ from tqdm import tqdm
 import matplotlib.pyplot as plt
 
 import jax.numpy as jnp
-from jax.config import config
 from jax import jit, grad, random
-from jax.experimental import optimizers
-from jax.experimental import stax
-from jax.experimental.stax import Flatten, Dense, Relu, LogSoftmax
-
+from jax.example_libraries import optimizers
+from jax.example_libraries import stax
+from jax.example_libraries.stax import Flatten, Dense, Relu, LogSoftmax
 import tensorflow_datasets as tfds
 
 
@@ -112,7 +110,7 @@ def subset_train(seed, subset_ratio):
   testset_correctness = batch_correctness(
       params, (mnist_data['test_images'], mnist_data['test_labels']))
 
-  trainset_mask = np.zeros(num_train_total, dtype=np.bool)
+  trainset_mask = np.zeros(num_train_total, dtype=np.bool_)
   trainset_mask[subset_idx] = True
   return trainset_mask, np.asarray(trainset_correctness), np.asarray(testset_correctness)
 
@@ -143,7 +141,111 @@ def estimate_infl_mem():
   infl_est = _masked_dot(testset_correctness, trainset_mask) - _masked_dot(testset_correctness, inv_mask)
 
   return dict(memorization=mem_est, influence=infl_est)
+
+def show_examples_of_memo_around_zero_or_one_or_half(estimates):
+  """
+  Examples of the estimated subsampled memorization values around 0, 0.5, and 1.
+  Five sample displays of the same labels and memory values.
+  That is, there are 50 samples with the same memory value, while a total of 150 samples are displayed.
+  """
+
+  n_show = 5
+  memorization_targets = [0, 0.5, 1]
+
+  fig, axs = plt.subplots(
+    nrows=10,
+    ncols=n_show * len(memorization_targets) + 2,  # Add 2 for the splitters
+    figsize=(n_show * len(memorization_targets) + 2, 10),  # Adjust the figure size
+  )
+
+  # Make the splitter columns empty and adjust their widths
+  for i in range(10):
+    axs[i, 5].axis('off')
+    axs[i, 5].set_xlim([0, 0.5])  # Adjust the width of the splitter
+    axs[i, 11].axis('off')
+    axs[i, 11].set_xlim([0, 0.5])  # Adjust the width of the splitter
+
+  def show_image(ax, image, title=None):
+    if image.ndim == 3 and image.shape[2] == 1:
+        image = image.reshape((image.shape[0], image.shape[1]))
+    ax.axis("off")
+    ax.imshow(image, cmap="gray")
+    if title is not None:
+        ax.set_title(title, fontsize="x-small")
+
+  for i, mem_target in enumerate(memorization_targets):
+    # Find the indices of the examples that have memorization values close to mem_value
+    idxs_sorted = np.argsort(np.abs(estimates['memorization'] - mem_target))
+    for label in range(10):
+      # get 'n_show' closest to the target memorization value:
+      idxs = idxs_sorted[mnist_data['train_int_labels'][idxs_sorted] == label]
+      idxs = idxs[:n_show]
+
+      for j, idx in enumerate(idxs):
+        image = mnist_data['train_byte_images'][idx]
+        mem = estimates['memorization'][idx]
+        # show_image(axs[label, i * n_show + j], image, title=f"L={label}, mem={mem:.3f}")
+        # Adjust the column index to account for the splitters
+        col_idx = i * n_show + j
+        if i == 1:
+          col_idx += 1
+        elif i == 2:
+          col_idx += 2
+        show_image(axs[label, col_idx], image, title=f"{mem:.3f}")
+
+
+  plt.tight_layout()
+  plt.savefig("mnist-memorization-examples.pdf", bbox_inches="tight")
+
+
+def show_infl_pairs(estimates, n_show=10, mem_threshold=0.25, infl_threshold=0.15):
+  """
+  Show pairs (with the same label) where the memorization and influence values are higher than the thresholds.
+  """
+  def show_image(ax, image, vmin=None, vmax=None, title=None):
+    if image.ndim == 3 and image.shape[2] == 1:
+      image = image.reshape((image.shape[0], image.shape[1]))
+    ax.axis('off')
+    ax.imshow(image, cmap='gray', vmin=vmin, vmax=vmax)
+    if title is not None:
+      ax.set_title(title, fontsize='x-small')
+
+  n_show = 10
+  n_context1 = 4
+
+  fig, axs = plt.subplots(nrows=n_show, ncols=n_context1+1+1,
+                          figsize=(n_context1+1+1, n_show))
+  for i in range(n_show):
+    axs[i, 1].axis('off')
+    axs[i, 1].set_xlim([0, 0.5])  # Adjust the width of the splitter
+
+  # choose random training examples with memorization higher than mem_threshold
+  # and max influence higher than infl_threshold:
+  idx_tr_above_mem_threshold = np.nonzero(estimates['memorization'] > mem_threshold)[0]
+  idx_tt_max_infl = np.argsort(estimates['influence'][:, idx_tr_above_mem_threshold], axis=0)[::-1]
+  mask = estimates['influence'][idx_tt_max_infl[0], idx_tr_above_mem_threshold] > infl_threshold
+  idx_sampled_tr = idx_tr_above_mem_threshold[mask][:n_show]
   
+  for i, idx_tr in enumerate(idx_sampled_tr):
+    # show train example
+    label_tr = mnist_data['train_int_labels'][idx_tr]
+    mem = estimates['memorization'][idx_tr]
+    show_image(axs[i, 0], mnist_data['train_byte_images'][idx_tr],
+               title=f'tr,mem={mem:.3f}')
+
+    # show 4 highest influence test point with the same label:
+    idx_tt_highest = np.argsort(estimates['influence'][:, idx_tr])[::-1]
+    idx_tt_highest = idx_tt_highest[mnist_data['test_int_labels'][idx_tt_highest] == label_tr]
+    idx_tt_highest = idx_tt_highest[:n_context1]
+    for j, idx_tt in enumerate(idx_tt_highest):
+      infl = estimates['influence'][idx_tt, idx_tr]
+      show_image(axs[i, j+2], mnist_data['test_byte_images'][idx_tt],
+                 title=f'test,infl={infl:.3f}')
+
+
+  plt.tight_layout()
+  plt.savefig('mnist-high-infl-pairs.pdf', bbox_inches='tight')
+
 
 def show_examples(estimates, n_show=10):
   def show_image(ax, image, vmin=None, vmax=None, title=None):
@@ -196,4 +298,6 @@ if __name__ == '__main__':
     estimates = estimate_infl_mem()
     np.savez(npz_fn, **estimates)
 
-  show_examples(estimates)
+  # show_examples(estimates)
+  show_examples_of_memo_around_zero_or_one_or_half(estimates)
+  show_infl_pairs(estimates)
